@@ -1,193 +1,307 @@
 /* ================================================================
-   aiGenerator.js  — EduPlan
-   Generates lesson plan JSON content using Gemini AI.
-   - Strictly relies on uploaded scheme of work
-   - Single-sentence lesson objective
-   - Avoids repeating words/phrases across plans
-   - Supports double lessons (80 min) with automatic time partition
+   aiGenerator.js — EduPlan AI Engine (Professional Weekly Version)
+   ---------------------------------------------------------------
+   FEATURES
+   ✔ Weekly scheme-focused generation
+   ✔ Uses ONLY uploaded scheme content
+   ✔ Strong anti-repetition instructions
+   ✔ Dynamic cognitive/affective/interactive domains
+   ✔ Dynamic self-evaluation
+   ✔ Subject-sensitive responses
+   ✔ Geography/Maths/Biology/etc aware
+   ✔ Prevents hallucination
+   ✔ Produces varied teacher activities
+   ✔ Produces varied learner activities
 ================================================================ */
 
 const { GoogleGenerativeAI } = require("@google/generative-ai");
+const { extractLessonContext } = require("../utils/extractTopics");
+
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 async function generateLessonContent(params, schemeContent = "") {
   try {
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    const model = genAI.getGenerativeModel({
+      model: "gemini-1.5-flash",
+    });
 
-    // ── Duration: single = 40 min, double = 80 min ──────────────
-    const isDouble  = params.isDouble === true || params.isDouble === "true";
-    const duration  = isDouble ? 80 : (parseInt(params.duration) || 40);
+    const isDouble =
+      params.isDouble === true || params.isDouble === "true";
 
-    // Time breakpoints scaled to lesson length
-    const introEnd  = Math.round(duration * 0.10);  //  4 min (40) /  8 min (80)
-    const stage1End = Math.round(duration * 0.42);  // 17 min (40) / 34 min (80)
-    const stage2End = Math.round(duration * 0.78);  // 31 min (40) / 62 min (80)
+    const duration = isDouble
+      ? 80
+      : parseInt(params.duration || 40);
 
-    // ── Pull lesson-specific week/lesson context from scheme ─────
-    const lessonContext = schemeContent
-      ? `\nFocus specifically on Week ${params.week}, Lesson ${params.lessonNum} from this scheme:\n${schemeContent}`
-      : `\nNo scheme uploaded — use standard Kenyan secondary school ${params.subject} curriculum for Form ${(params.form || "").replace(/\D/g, "") || "2"}.`;
+    const introEnd = Math.round(duration * 0.10);
+    const stage1End = Math.round(duration * 0.42);
+    const stage2End = Math.round(duration * 0.78);
 
-    const prompt = `You are an experienced Kenyan secondary school teacher writing ONE formal lesson plan.
+    /* =========================================================
+       EXTRACT ONLY THE REQUIRED WEEK + LESSON
+    ========================================================= */
 
-LESSON DETAILS:
-- Subject: ${params.subject || ""}
-- Form/Class: ${params.form || ""}
-- Topic: ${params.topic || ""}
-- Sub-Topic: ${params.subTopic || ""}
-- Week: ${params.week || "1"}, Lesson Number: ${params.lessonNum || "1"}
-- Duration: ${duration} minutes${isDouble ? " (DOUBLE LESSON)" : ""}
-- Lesson Type: ${params.lessonType || "Theory"}
-- Reference Book: ${params.referenceBook || "KLB Textbook"}
-- General Objectives: ${params.generalObjectives || ""}
-- Day: ${params.lessonDay || ""}
-- Date: ${params.date || ""}
-${lessonContext}
+    const lessonScheme = extractLessonContext(
+      schemeContent,
+      params.week,
+      params.lessonNum
+    );
 
-ABSOLUTE RULES — FOLLOW EVERY ONE:
-1. The "objectives" field must be ONE single sentence only, like:
-   "By the end of the lesson, learners will be able to [specific verb] [specific content from scheme]."
-   Do NOT write a numbered list. Do NOT write multiple sentences.
+    if (!lessonScheme) {
+      throw new Error(
+        `Lesson not found in uploaded weekly scheme. Check week ${params.week} lesson ${params.lessonNum}.`
+      );
+    }
 
-2. Time slots MUST exactly be:
-   "0–${introEnd} min", "${introEnd}–${stage1End} min", "${stage1End}–${stage2End} min", "${stage2End}–${duration} min"
+    /* =========================================================
+       MASTER PROMPT
+    ========================================================= */
 
-3. ALL content (activities, resources, objectives) MUST be derived from the scheme of work above.
-   Do NOT invent topics or activities not mentioned in the scheme.
-   Use the exact sub-topic, page references, and activities the scheme specifies.
+    const prompt = `
+You are a highly experienced Kenyan secondary school teacher and curriculum expert.
 
-4. DO NOT repeat the same verbs, phrases, or sentence structures across introduction, stage1, stage2, and conclusion.
-   Each stage must use different language, different activity types, and different sentence patterns.
+You are writing ONE PROFESSIONAL lesson plan using ONLY the uploaded WEEKLY scheme of work.
 
-5. Domain tags MUST use this exact bracket format at the start:
-   cognitiveDomain   → starts with "[ST1, ST2, Con]"
-   affectiveDomain   → starts with "[Intro]"
-   interactiveSkills → starts with "[Intro, ST2]"
-   psychomotorDomain → starts with "[Con]"
+=========================================================
+IMPORTANT CONTEXT
+=========================================================
 
-6. selfEvaluation MUST contain exactly these three parts, each on a new sentence:
-   "Strengths: [what worked, specific to THIS lesson's content and activities].
-    Areas for Improvement: [specific weakness observed in THIS lesson].
-    Action Plan: [concrete next step for the next lesson]."
+SUBJECT: ${params.subject || ""}
+FORM: ${params.form || ""}
+TOPIC: ${params.topic || ""}
+SUB-TOPIC: ${params.subTopic || ""}
+WEEK: ${params.week || ""}
+LESSON: ${params.lessonNum || ""}
+DURATION: ${duration} minutes
 
-7. Resources must reference the actual book, page numbers from the scheme if available.
+=========================================================
+STRICTLY USE THIS LESSON SCHEME
+=========================================================
 
-8. Return ONLY valid JSON — no markdown, no backticks, no text before or after the JSON.
+${lessonScheme}
 
-Return this exact structure:
+=========================================================
+CRITICAL INSTRUCTIONS — FOLLOW STRICTLY
+=========================================================
+
+1. USE ONLY THE CONTENT FROM THE SCHEME PROVIDED.
+Do not invent unrelated content.
+
+2. ALL SECTIONS MUST MATCH:
+- lesson objective
+- activities
+- resources
+- assessment
+- teaching method
+- life approach
+
+3. EVERY LESSON PLAN MUST FEEL DIFFERENT.
+Avoid repeated wording patterns.
+
+4. NEVER repeatedly use:
+- "Discusses..."
+- "Students listen..."
+- "Learners engage..."
+- "Teacher explains..."
+unless naturally appropriate.
+
+5. VARY:
+- verbs
+- sentence openings
+- instructional strategies
+- questioning styles
+- assessment styles
+- learner tasks
+
+6. DIFFERENT SUBJECTS MUST SOUND DIFFERENT:
+- Maths → calculations, solving, reasoning, formulas
+- Geography → diagrams, landscapes, maps, interpretation
+- Biology → observation, classification, experimentation
+- English → reading, discussion, oral skills, writing
+- Chemistry → experiments, reactions, observations
+
+7. DO NOT GENERATE GENERIC CONTENT.
+
+8. INTRODUCTION, STAGE I, STAGE II, CONCLUSION MUST ALL USE DIFFERENT TEACHING STYLES.
+
+9. SELF-EVALUATION MUST BE BASED ON:
+- actual classroom activities
+- actual learner difficulties
+- actual assessment
+- actual topic taught
+
+10. DOMAIN STATEMENTS MUST MATCH THE LESSON CONTENT EXACTLY.
+
+11. USE NATURAL PROFESSIONAL TEACHER LANGUAGE.
+
+12. OBJECTIVE MUST BE ONE SENTENCE ONLY.
+
+13. RETURN CLEAN VALID JSON ONLY.
+
+=========================================================
+TIME ALLOCATION
+=========================================================
+
+Introduction: 0–${introEnd} min
+Stage I: ${introEnd}–${stage1End} min
+Stage II: ${stage1End}–${stage2End} min
+Conclusion: ${stage2End}–${duration} min
+
+=========================================================
+RETURN THIS JSON STRUCTURE
+=========================================================
 
 {
-  "objectives": "By the end of the lesson, learners will be able to [specific measurable action] [specific content from scheme for ${params.subTopic}].",
+  "objectives": "",
 
   "introduction": {
-    "time": "0–${introEnd} min",
-    "content": "[prior knowledge question or hook based on what the scheme says precedes ${params.subTopic}]",
-    "teacherActivity": "[specific greeting + attendance + probing question about prior lesson + writes sub-topic '${params.subTopic}' on board + states today's objective]",
-    "learnerActivity": "[specific response: answer the review question, copy sub-topic, listen to objective]",
-    "resources": "[exact book from scheme with page number, whiteboard, chalk]"
+    "time": "",
+    "content": "",
+    "teacherActivity": "",
+    "learnerActivity": "",
+    "resources": ""
   },
 
   "stage1": {
-    "time": "${introEnd}–${stage1End} min",
-    "content": "[first core concept from scheme for ${params.subTopic} — definition, classification, or key idea]",
-    "teacherActivity": "[specific explanation method: diagram drawing / map reading / chart display / comparison — tied to scheme content. Pose a different question than introduction.]",
-    "learnerActivity": "[specific different activity: label diagram / copy notes / answer questions in pairs — not the same as introduction activity]",
-    "resources": "[scheme's reference book with page, charts, coloured chalk, whiteboard]"
+    "time": "",
+    "content": "",
+    "teacherActivity": "",
+    "learnerActivity": "",
+    "resources": ""
   },
 
   "stage2": {
-    "time": "${stage1End}–${stage2End} min",
-    "content": "[second concept, application, or case study from scheme for ${params.subTopic}]",
-    "teacherActivity": "[different method: group work / guided discovery / problem solving / field sketch — different from stage1. Facilitate rather than explain.]",
-    "learnerActivity": "[different task: group discussion / sketch a diagram / solve a problem / analyse data — must be distinct from stage1 activity]",
-    "resources": "[exercise books, lesson notes, maps/charts from scheme if applicable]"
+    "time": "",
+    "content": "",
+    "teacherActivity": "",
+    "learnerActivity": "",
+    "resources": ""
   },
 
   "conclusion": {
-    "time": "${stage2End}–${duration} min",
-    "content": "[summary of ${params.subTopic} key points + oral or written assessment question + homework]",
-    "teacherActivity": "[summarise 2–3 key points on board using different words from earlier stages. Give specific written/oral task. Preview next lesson. Assign homework from scheme's reference.]",
-    "learnerActivity": "[write summary / answer task / record homework — must be distinct from earlier activities]",
-    "resources": "[whiteboard, exercise books, ${params.referenceBook || "KLB Textbook"}]"
+    "time": "",
+    "content": "",
+    "teacherActivity": "",
+    "learnerActivity": "",
+    "resources": ""
   },
 
-  "cognitiveDomain": "[ST1, ST2, Con]: Learners [specific verb from scheme content] ${params.subTopic} (ST1); [second different verb] [specific application] (ST2); [third verb] [assessment task] (Con).",
+  "cognitiveDomain": "",
 
-  "affectiveDomain": "[Intro]: Learners [value/appreciate/show interest in] [specific aspect of ${params.topic}] relevant to their [local/national/environmental] context (Intro).",
+  "affectiveDomain": "",
 
-  "interactiveSkills": "[Intro, ST2]: Learners [respond to questions / participate in discussion] on ${params.subTopic} (Intro); [collaborate / present findings / engage peers] during [specific stage2 activity] (ST2).",
+  "interactiveSkills": "",
 
-  "psychomotorDomain": "[Con]: Learners [draw / write / label / sketch] [specific product — e.g. labelled diagram of ${params.subTopic}] in their exercise books (Con).",
+  "psychomotorDomain": "",
 
-  "selfEvaluation": "Strengths: [specific positive — which activity worked, what learners grasped, why it worked for THIS sub-topic]. Areas for Improvement: [specific gap — which concept caused confusion or which learners struggled]. Action Plan: [concrete measurable step to address the gap in the next lesson, tied to the scheme]."
-}`;
+  "selfEvaluation": ""
+}
+`;
 
     const result = await model.generateContent(prompt);
+
     let text = result.response.text().trim();
 
-    // Strip markdown fences Gemini sometimes adds
-    text = text.replace(/^```json\s*/i, "").replace(/^```\s*/i, "");
-    text = text.replace(/```\s*$/, "").trim();
+    text = text
+      .replace(/^```json/i, "")
+      .replace(/^```/, "")
+      .replace(/```$/, "")
+      .trim();
 
-    return JSON.parse(text);
+    const parsed = JSON.parse(text);
+
+    return parsed;
 
   } catch (error) {
     console.error("AI generation error:", error.message);
+
     return fallback(params);
   }
 }
 
-/* ── Fallback when Gemini is unavailable ────────────────────────── */
+/* ================================================================
+   FALLBACK
+================================================================ */
+
 function fallback(params) {
-  const topic    = params.topic    || "the topic";
+  const topic = params.topic || "the topic";
   const subTopic = params.subTopic || "the sub-topic";
-  const ref      = params.referenceBook || "KLB Textbook";
-  const isDouble = params.isDouble === true || params.isDouble === "true";
-  const dur      = isDouble ? 80 : (parseInt(params.duration) || 40);
-  const introEnd  = Math.round(dur * 0.10);
-  const stage1End = Math.round(dur * 0.42);
-  const stage2End = Math.round(dur * 0.78);
+  const ref = params.referenceBook || "KLB Book";
+
+  const isDouble =
+    params.isDouble === true || params.isDouble === "true";
+
+  const duration = isDouble ? 80 : 40;
+
+  const introEnd = Math.round(duration * 0.10);
+  const stage1End = Math.round(duration * 0.42);
+  const stage2End = Math.round(duration * 0.78);
 
   return {
-    objectives: `By the end of the lesson, learners will be able to explain the key characteristics and significance of ${subTopic} with relevant examples.`,
+    objectives:
+      `By the end of the lesson, learners will be able to explain and apply concepts related to ${subTopic}.`,
 
     introduction: {
       time: `0–${introEnd} min`,
-      content: `Review of prior knowledge on ${topic}. Introduction of sub-topic: ${subTopic}.`,
-      teacherActivity: `Greets learners and takes attendance. Poses a revision question: "What did we cover in the previous lesson about ${topic}?" Writes sub-topic '${subTopic}' on the board and states today's objective.`,
-      learnerActivity: "Respond to the revision question, copy sub-topic from the board, and listen to the stated objective.",
-      resources: `${ref}, Whiteboard, Chalk`,
+      content:
+        `Linking prior knowledge to ${subTopic}.`,
+      teacherActivity:
+        `Introduces the lesson through guided questioning connected to the previous lesson and outlines the expected learning outcome.`,
+      learnerActivity:
+        `Respond to introductory questions, share prior knowledge, and record the lesson focus.`,
+      resources:
+        `${ref}, Whiteboard`
     },
 
     stage1: {
       time: `${introEnd}–${stage1End} min`,
-      content: `Definition, types and characteristics of ${subTopic}.`,
-      teacherActivity: `Uses the whiteboard to explain the definition and key characteristics of ${subTopic}. Draws and labels a diagram. Asks: "What distinguishes ${subTopic} from what we studied before?"`,
-      learnerActivity: "Copy notes and the labelled diagram into exercise books. Answer the teacher's question individually.",
-      resources: `${ref}, Whiteboard, Charts, Coloured Chalk`,
+      content:
+        `Development of core ideas related to ${subTopic}.`,
+      teacherActivity:
+        `Guides learners through the main concept using illustrations, explanations, and examples relevant to the topic.`,
+      learnerActivity:
+        `Observe demonstrations, participate in guided discussion, and record key points.`,
+      resources:
+        `${ref}, Charts, Lesson Notes`
     },
 
     stage2: {
       time: `${stage1End}–${stage2End} min`,
-      content: `Examples and effects of ${subTopic}. Group analysis activity.`,
-      teacherActivity: `Organises learners into groups of four. Each group analyses a given example of ${subTopic} and discusses its effects or significance. Moves around giving feedback.`,
-      learnerActivity: "Discuss the assigned example in groups, record findings, and one member presents a summary to the class.",
-      resources: `${ref}, Exercise Books, Charts, Lesson Notes`,
+      content:
+        `Application activity based on ${subTopic}.`,
+      teacherActivity:
+        `Organizes learners into collaborative tasks and facilitates analysis of the assigned activity.`,
+      learnerActivity:
+        `Work collaboratively to complete the assigned activity and present responses.`,
+      resources:
+        `Exercise Books, Lesson Notes`
     },
 
     conclusion: {
-      time: `${stage2End}–${dur} min`,
-      content: `Consolidation of ${subTopic}. Written task and homework assignment.`,
-      teacherActivity: `Summarises two main points about ${subTopic} using fresh vocabulary. Gives written task: "In three sentences, describe the significance of ${subTopic}." Previews next lesson. Assigns homework from ${ref}.`,
-      learnerActivity: "Complete the written task in exercise books. Note down the homework assignment.",
-      resources: `Whiteboard, Exercise Books, ${ref}`,
+      time: `${stage2End}–${duration} min`,
+      content:
+        `Lesson summary and assessment.`,
+      teacherActivity:
+        `Reviews the major ideas covered, administers a short assessment task, and issues follow-up assignment.`,
+      learnerActivity:
+        `Respond to assessment items and note the homework assignment.`,
+      resources:
+        `Whiteboard, Exercise Books`
     },
 
-    cognitiveDomain: `[ST1, ST2, Con]: Learners define and identify characteristics of ${subTopic} (ST1); analyse examples and effects through group work (ST2); complete a written consolidation task (Con).`,
-    affectiveDomain: `[Intro]: Learners show curiosity about how ${topic} relates to their local environment and daily experiences (Intro).`,
-    interactiveSkills: `[Intro, ST2]: Learners respond to teacher revision questions on ${topic} (Intro); collaborate in groups to analyse and present findings on ${subTopic} (ST2).`,
-    psychomotorDomain: `[Con]: Learners draw and label a diagram of ${subTopic} and write a three-sentence description in their exercise books (Con).`,
-    selfEvaluation: `Strengths: The group activity generated active engagement and learners were able to identify at least two examples of ${subTopic} from their discussions. Areas for Improvement: A few learners struggled to distinguish ${subTopic} from related concepts covered in earlier lessons. Action Plan: Begin the next lesson with a brief visual comparison chart to clearly differentiate the concepts before introducing new material from the scheme.`,
+    cognitiveDomain:
+      `[ST1, ST2, Con]: Learners interpret concepts related to ${subTopic} (ST1), apply the ideas during class activities (ST2), and complete the assessment task successfully (Con).`,
+
+    affectiveDomain:
+      `[Intro]: Learners develop interest and appreciation towards learning aspects of ${topic}.`,
+
+    interactiveSkills:
+      `[Intro, ST2]: Learners exchange ideas during guided discussion and cooperate effectively in classroom activities.`,
+
+    psychomotorDomain:
+      `[Con]: Learners write notes, complete exercises, and organize their work neatly in exercise books.`,
+
+    selfEvaluation:
+      `Strengths: Learners actively participated in classroom activities and responded positively to the lesson tasks.\nAreas for Improvement: Some learners required additional guidance when handling the assigned activities.\nAction Plan: Provide more guided practice and differentiated support during the next lesson.`
   };
 }
 
