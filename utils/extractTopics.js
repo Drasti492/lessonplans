@@ -1,54 +1,52 @@
-/* ================================================================
-   extractTopics.js
-   Extracts ONLY the requested week + lesson from weekly scheme
-================================================================ */
-
-function extractLessonContext(text, week, lessonNum) {
+function extractLessonContext(text, targetWeek, targetLesson) {
   if (!text) return "";
 
-  const clean = text.replace(/\r/g, "");
+  const lines = text
+    .replace(/\r/g, "")
+    .split("\n")
+    .map(l => l.trim())
+    .filter(Boolean);
 
-  const lines = clean.split("\n");
+  let currentWeek = null;
+  let currentLesson = null;
 
-  let currentWeek = "";
-  let currentLesson = "";
+  let collecting = false;
+  let lessonLines = [];
 
-  let collected = [];
+  for (const line of lines) {
 
-  for (let line of lines) {
-    const trimmed = line.trim();
+    /*
+      MATCHES:
+      7 1 Topic
+    */
+    const weekLessonMatch = line.match(/^(\d+)\s+(\d+)\s+/);
 
-    if (!trimmed) continue;
+    /*
+      MATCHES:
+      2 Topic
+    */
+    const lessonOnlyMatch = line.match(/^(\d+)\s+/);
 
-    const wkMatch = trimmed.match(/^(\d+)\s+/);
+    if (weekLessonMatch) {
 
-    if (wkMatch) {
-      currentWeek = wkMatch[1];
+      currentWeek = weekLessonMatch[1];
+      currentLesson = weekLessonMatch[2];
 
-      const rest = trimmed.replace(/^(\d+)\s+/, "");
+    } else if (lessonOnlyMatch && currentWeek) {
 
-      const lesMatch = rest.match(/^(\d+)/);
-
-      if (lesMatch) {
-        currentLesson = lesMatch[1];
-      }
-    } else {
-      const lessonMatch = trimmed.match(/^(\d+)\s+/);
-
-      if (lessonMatch) {
-        currentLesson = lessonMatch[1];
-      }
+      currentLesson = lessonOnlyMatch[1];
     }
 
-    if (
-      String(currentWeek) === String(week) &&
-      String(currentLesson) === String(lessonNum)
-    ) {
-      collected.push(trimmed);
+    collecting =
+      String(currentWeek) === String(targetWeek) &&
+      String(currentLesson) === String(targetLesson);
+
+    if (collecting) {
+      lessonLines.push(line);
     }
   }
 
-  return collected.join("\n");
+  return lessonLines.join("\n");
 }
 
 module.exports = { extractLessonContext };

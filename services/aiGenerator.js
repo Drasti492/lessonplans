@@ -22,8 +22,8 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 async function generateLessonContent(params, schemeContent = "") {
   try {
     const model = genAI.getGenerativeModel({
-      model: "gemini-1.5-flash",
-    });
+  model: "gemini-1.5-flash-latest",
+});
 
     const isDouble =
       params.isDouble === true || params.isDouble === "true";
@@ -51,6 +51,11 @@ async function generateLessonContent(params, schemeContent = "") {
         `Lesson not found in uploaded weekly scheme. Check week ${params.week} lesson ${params.lessonNum}.`
       );
     }
+
+
+    console.log("========== EXTRACTED LESSON ==========");
+    console.log(lessonScheme);
+    console.log("======================================");
 
     /* =========================================================
        MASTER PROMPT
