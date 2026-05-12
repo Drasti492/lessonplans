@@ -1,208 +1,223 @@
 /* ================================================================
-   extractTopics.js — EduPlan
-   Parses a pasted scheme of work (tab-separated or space-aligned)
-   and extracts the row matching a given week + lesson number.
+   extractTopics.js — EduPlan  v4
+   ----------------------------------------------------------------
+   Parses a pasted/uploaded scheme of work (tab-separated, as
+   exported from Word/Excel) into structured lesson objects.
 
-   Scheme column order (standard Kenyan format):
-   Wk | Les | Topic/Content | Objectives | Life Approach |
-   Activities | Methods | Resources | Assessment | Remarks
+   STANDARD KENYAN SCHEME COLUMNS (0-based):
+   0: Wk   1: Les   2: Topic   3: Objectives   4: Life Approach
+   5: Activities   6: Methods   7: Resources   8: Assessment   9: Remarks
 
-   The function returns a rich structured object AND a formatted
-   string block that the AI prompt can consume directly.
+   KEY FIXES vs v3:
+   - A genuine new lesson row MUST have a numeric Les in col1
+   - Week is carried forward when blank (lessons 2,3 in same week)
+   - Resource/method continuation lines with no lesson number
+     are appended to the PREVIOUS lesson, NOT treated as new rows
+   - 3-strategy matching handles sequential frontend counters
 ================================================================ */
 
-/**
- * Normalise a raw scheme text line into tab-separated tokens.
- * Handles both \t and multiple-space separators.
- */
-function tokeniseLine(line) {
-  // If the line has tabs, use them directly
-  if (line.includes("\t")) {
-    return line.split("\t").map((t) => t.trim());
-  }
-  // Otherwise collapse 2+ spaces into a single delimiter
-  return line.split(/  +/).map((t) => t.trim());
+function isNumeric(s) {
+  return /^\d+$/.test((s || "").trim());
 }
 
-/**
- * Parse the full scheme text into an array of lesson objects.
- * Handles multi-line cells by carrying forward the last seen
- * week and lesson numbers.
- */
-function parseScheme(schemeText) {
-  if (!schemeText || !schemeText.trim()) return [];
+function splitLine(line) {
+  // Prefer tabs; fall back to 3+ spaces (avoids splitting mid-sentence)
+  if (line.includes("\t")) return line.split("\t").map((c) => c.trim());
+  return line.split(/   +/).map((c) => c.trim());
+}
 
-  const rawLines = schemeText
-    .split(/\r?\n/)
-    .map((l) => l.trimEnd())
-    .filter((l) => l.trim().length > 0);
+function isHeader(cols) {
+  const f = (cols[0] || "").toLowerCase().trim();
+  const s = (cols[1] || "").toLowerCase().trim();
+  return (
+    /^(wk|week)$/.test(f) ||
+    /^(wk|week)$/.test(s) ||
+    /^les(son)?$/.test(s) ||
+    (f === "" && /^les(son)?$/.test(s))
+  );
+}
+
+function append(existing, extra) {
+  const e = (extra || "").trim();
+  if (!e) return existing || "";
+  if (!existing) return e;
+  return existing + " " + e;
+}
+
+function appendCol(obj, field, cols, idx) {
+  if (cols[idx] && cols[idx].trim()) {
+    obj[field] = append(obj[field], cols[idx]);
+  }
+}
+
+function cleanLesson(l) {
+  Object.keys(l).forEach((k) => {
+    if (typeof l[k] === "string") l[k] = l[k].replace(/\s+/g, " ").trim();
+  });
+}
+
+/* ── Main parser ─────────────────────────────────────────── */
+function parseScheme(rawText) {
+  if (!rawText || !rawText.trim()) return [];
+
+  const lines = rawText
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .split("\n")
+    .map((l) => l.trimEnd());
 
   const lessons = [];
-  let currentLesson = null;
+  let current = null;
   let lastWeek = null;
-  let lastLes = null;
 
-  // Column indices — may shift slightly; we detect by header row
-  const COLS = {
-    wk: 0,
-    les: 1,
-    topic: 2,
-    objectives: 3,
-    lifeApproach: 4,
-    activities: 5,
-    methods: 6,
-    resources: 7,
-    assessment: 8,
-    remarks: 9,
-  };
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    const cols = splitLine(line);
+    if (isHeader(cols)) continue;
 
-  // Skip header rows
-  const isHeader = (tokens) =>
-    /^(wk|week|les|lesson|topic|content)/i.test(tokens[0]) ||
-    /^(wk|week|les|lesson|topic|content)/i.test(tokens[1]);
+    const col0 = (cols[0] || "").trim();
+    const col1 = (cols[1] || "").trim();
 
-  for (const line of rawLines) {
-    const tokens = tokeniseLine(line);
-    if (tokens.length < 2) continue;
-    if (isHeader(tokens)) continue;
+    const weekVal   = isNumeric(col0) ? parseInt(col0) : null;
+    const lessonVal = isNumeric(col1) ? parseInt(col1) : null;
 
-    const rawWk  = tokens[COLS.wk]  || "";
-    const rawLes = tokens[COLS.les] || "";
+    if (lessonVal !== null) {
+      // ── New lesson row ─────────────────────────────────────
+      if (current) { cleanLesson(current); lessons.push(current); }
+      if (weekVal !== null) lastWeek = weekVal;
 
-    const wkNum  = parseInt(rawWk);
-    const lesNum = parseInt(rawLes);
-
-    const hasNewWeek   = !isNaN(wkNum)  && wkNum > 0;
-    const hasNewLesson = !isNaN(lesNum) && lesNum > 0;
-
-    if (hasNewWeek)   lastWeek = wkNum;
-    if (hasNewLesson) lastLes  = lesNum;
-
-    // A genuine new lesson row has at least a lesson number
-    // OR a topic in the topic column
-    const hasTopic = (tokens[COLS.topic] || "").trim().length > 0;
-
-    if ((hasNewLesson || hasNewWeek) && hasTopic) {
-      // Save previous lesson if exists
-      if (currentLesson) lessons.push(currentLesson);
-
-      currentLesson = {
-        week:        lastWeek  || 0,
-        lesson:      lastLes   || 0,
-        topic:       tokens[COLS.topic]       || "",
-        objectives:  tokens[COLS.objectives]  || "",
-        lifeApproach:tokens[COLS.lifeApproach]|| "",
-        activities:  tokens[COLS.activities]  || "",
-        methods:     tokens[COLS.methods]     || "",
-        resources:   tokens[COLS.resources]   || "",
-        assessment:  tokens[COLS.assessment]  || "",
-        remarks:     tokens[COLS.remarks]     || "",
+      current = {
+        week:         lastWeek || 0,
+        lesson:       lessonVal,
+        topic:        (cols[2] || "").trim(),
+        objectives:   (cols[3] || "").trim(),
+        lifeApproach: (cols[4] || "").trim(),
+        activities:   (cols[5] || "").trim(),
+        methods:      (cols[6] || "").trim(),
+        resources:    (cols[7] || "").trim(),
+        assessment:   (cols[8] || "").trim(),
+        remarks:      (cols[9] || "").trim(),
       };
 
-    } else if (currentLesson) {
-      // Continuation line — append non-empty tokens to existing fields
-      // Tokens at known column positions get appended to the right field
-      const appendTo = (field, idx) => {
-        const extra = (tokens[idx] || "").trim();
-        if (extra && extra !== "-") {
-          currentLesson[field] = currentLesson[field]
-            ? currentLesson[field] + " " + extra
-            : extra;
-        }
-      };
+    } else if (current !== null) {
+      // ── Continuation line ──────────────────────────────────
+      if (cols.length >= 4) {
+        // Tab structure preserved — append positionally
+        appendCol(current, "topic",        cols, 2);
+        appendCol(current, "objectives",   cols, 3);
+        appendCol(current, "lifeApproach", cols, 4);
+        appendCol(current, "activities",   cols, 5);
+        appendCol(current, "methods",      cols, 6);
+        appendCol(current, "resources",    cols, 7);
+        appendCol(current, "assessment",   cols, 8);
+        appendCol(current, "remarks",      cols, 9);
+      } else {
+        // Unstructured continuation — route by keyword
+        const text = cols.filter(Boolean).join(" ").trim();
+        if (!text) continue;
 
-      // Append all columns that might have continuation content
-      for (let i = 2; i < tokens.length; i++) {
-        const extra = (tokens[i] || "").trim();
-        if (!extra || extra === "-") continue;
-
-        // Heuristic: assign based on column position
-        if (i === COLS.topic)        currentLesson.topic        += " " + extra;
-        else if (i === COLS.objectives)   currentLesson.objectives   += " " + extra;
-        else if (i === COLS.lifeApproach) currentLesson.lifeApproach += " " + extra;
-        else if (i === COLS.activities)   currentLesson.activities   += " " + extra;
-        else if (i === COLS.methods)      currentLesson.methods      += " " + extra;
-        else if (i === COLS.resources)    currentLesson.resources    += " " + extra;
-        else if (i === COLS.assessment)   currentLesson.assessment   += " " + extra;
-        else {
-          // Fallback: append to objectives or activities based on content
-          if (/learner|student|able to|should/i.test(extra)) {
-            currentLesson.objectives += " " + extra;
-          } else if (/\d\.|discuss|explain|show|draw|Q&A/i.test(extra)) {
-            currentLesson.activities += " " + extra;
-          } else if (/KLB|book|chart|text|board|atlas/i.test(extra)) {
-            currentLesson.resources += " " + extra;
-          } else if (/quiz|oral|describe|list|sketch|write/i.test(extra)) {
-            currentLesson.assessment += " " + extra;
-          }
+        if (/by the end|learners will|able to|should be able/i.test(text)) {
+          current.objectives = append(current.objectives, text);
+        } else if (/^\d+\.|discuss|explain|demonstrate|show|draw|Q&A|use atlas|mark|sketch/i.test(text)) {
+          current.activities = append(current.activities, text);
+        } else if (/KLB|textbook|blackboard|whiteboard|chart|atlas|lesson note|book \d|pp\./i.test(text)) {
+          current.resources = append(current.resources, text);
+        } else if (/quiz|oral|short quiz|describe|list|sketch|write|mark.*map|exercise/i.test(text)) {
+          current.assessment = append(current.assessment, text);
+        } else if (/lecture|instruction|demonstration|collaborative|discussion|map work|questioning/i.test(text)) {
+          current.methods = append(current.methods, text);
+        } else if (/awareness|approach|impact|value|appreciation|safety/i.test(text)) {
+          current.lifeApproach = append(current.lifeApproach, text);
+        } else {
+          current.topic = append(current.topic, text);
         }
       }
     }
   }
 
-  // Push last lesson
-  if (currentLesson) lessons.push(currentLesson);
-
-  // Clean up all string fields
-  lessons.forEach((l) => {
-    Object.keys(l).forEach((k) => {
-      if (typeof l[k] === "string") {
-        l[k] = l[k].replace(/\s+/g, " ").trim();
-      }
-    });
-  });
-
+  if (current) { cleanLesson(current); lessons.push(current); }
   return lessons;
 }
 
-/**
- * Find a specific lesson and return it as a formatted context string
- * for the AI prompt. Returns null if not found.
- *
- * @param {string} schemeText  - raw pasted scheme content
- * @param {number|string} week - target week number
- * @param {number|string} les  - target lesson number
- * @returns {string|null}
- */
-function extractLessonContext(schemeText, week, les) {
+/* ═══════════════════════════════════════════════════════════
+   PUBLIC: extractLessonContext
+   -------------------------------------------------------
+   The frontend sends `lessonNum` as a SEQUENTIAL counter
+   (1,2,3,4,5,6...) across ALL weeks.  The scheme stores
+   PER-WEEK lesson numbers (W3 L1, W3 L2, W3 L3).
+
+   We resolve this with 3 strategies:
+   1. Exact match: week===targetWeek AND lesson===targetLes
+   2. Offset match: subtract lessons from prior weeks to get
+      the per-week index, then find it in this week's lessons
+   3. Positional fallback: return the correct Nth lesson of
+      that week by position in the parsed array
+═══════════════════════════════════════════════════════════ */
+function extractLessonContext(schemeText, week, lessonNum) {
   const lessons = parseScheme(schemeText);
+  const targetWeek = parseInt(week)      || 1;
+  const targetLes  = parseInt(lessonNum) || 1;
 
-  const targetWeek = parseInt(week);
-  const targetLes  = parseInt(les);
-
-  const match = lessons.find(
-    (l) => l.week === targetWeek && l.lesson === targetLes
+  console.log(
+    "\nParsed lessons:",
+    lessons.map((l) => `W${l.week}L${l.lesson} — ${l.topic.substring(0, 50)}`)
   );
 
-  if (!match) {
-    // Debug: log what was parsed so we can see what weeks/lessons exist
-    console.log(
-      "Parsed lessons:",
-      lessons.map((l) => `W${l.week}L${l.lesson} — ${l.topic}`)
-    );
-    return null;
+  // ── Strategy 1: exact match ────────────────────────────────
+  let match = lessons.find(
+    (l) => l.week === targetWeek && l.lesson === targetLes
+  );
+  if (match) {
+    console.log(`✅ Exact match: W${match.week}L${match.lesson} "${match.topic}"`);
+    return formatContext(match);
   }
 
-  // Return a clean, readable context block for the AI
-  return [
-    `WEEK: ${match.week}`,
-    `LESSON: ${match.lesson}`,
-    `TOPIC: ${match.topic}`,
-    `OBJECTIVES: ${match.objectives}`,
-    `LIFE APPROACH / VALUE: ${match.lifeApproach}`,
-    `TEACHING/LEARNING ACTIVITIES: ${match.activities}`,
-    `METHODS/STRATEGY: ${match.methods}`,
-    `RESOURCES/REFERENCES: ${match.resources}`,
-    `ASSESSMENT: ${match.assessment}`,
-    match.remarks ? `REMARKS: ${match.remarks}` : "",
-  ]
-    .filter(Boolean)
-    .join("\n");
+  // ── Strategy 2: sequential → per-week offset ──────────────
+  // Count how many lessons appear in weeks BEFORE targetWeek
+  const priorCount = lessons.filter((l) => l.week < targetWeek).length;
+  const indexInWeek = targetLes - priorCount; // 1-based within this week
+
+  const weekLessons = lessons.filter((l) => l.week === targetWeek);
+  if (indexInWeek >= 1 && indexInWeek <= weekLessons.length) {
+    match = weekLessons[indexInWeek - 1];
+    console.log(
+      `✅ Offset match: sequential #${targetLes} → W${targetWeek} position #${indexInWeek} → "${match.topic}"`
+    );
+    return formatContext(match);
+  }
+
+  // ── Strategy 3: positional — Nth lesson of this week ──────
+  // Use (targetLes - 1) mod weekLessons.length as last resort
+  if (weekLessons.length > 0) {
+    const pos = ((targetLes - 1) % weekLessons.length);
+    match = weekLessons[pos];
+    console.warn(
+      `⚠️  Positional fallback: W${targetWeek} L${targetLes} → using position ${pos + 1} "${match.topic}"`
+    );
+    return formatContext(match);
+  }
+
+  console.error(
+    `❌ No lessons found for W${targetWeek}. Available weeks:`,
+    [...new Set(lessons.map((l) => l.week))]
+  );
+  return null;
 }
 
-/**
- * Returns ALL parsed lessons (useful for debugging or summary views).
- */
+function formatContext(m) {
+  return [
+    `WEEK: ${m.week}`,
+    `LESSON: ${m.lesson}`,
+    `TOPIC: ${m.topic}`,
+    `OBJECTIVES: ${m.objectives}`,
+    `LIFE APPROACH / VALUE: ${m.lifeApproach || "Not specified"}`,
+    `TEACHING/LEARNING ACTIVITIES: ${m.activities || "Not specified"}`,
+    `METHODS/STRATEGY: ${m.methods || "Not specified"}`,
+    `RESOURCES/REFERENCES: ${m.resources || "Not specified"}`,
+    `ASSESSMENT TASK: ${m.assessment || "Not specified"}`,
+  ].join("\n");
+}
+
 function getAllLessons(schemeText) {
   return parseScheme(schemeText);
 }
