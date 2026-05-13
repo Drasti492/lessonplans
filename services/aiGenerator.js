@@ -62,7 +62,9 @@ function pick(arr, n) { return arr[((parseInt(n)||1)-1) % arr.length]; }
 async function generateLessonContent(params, schemeContent = "") {
   try {
     // ✅ gemini-1.5-flash — NOT gemini-2.0-flash (zero free quota)
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    const model = genAI.getGenerativeModel({
+  model: "gemini-2.0-flash"
+});
 
     const isDouble = params.isDouble === true || params.isDouble === "true";
     const duration = isDouble ? 80 : (parseInt(params.duration) || 40);
