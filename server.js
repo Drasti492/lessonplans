@@ -17,8 +17,8 @@ app.use(express.static(path.join(__dirname, "public")));
 /*  MongoDB  */
 mongoose
   .connect(process.env.MONGO_URI)
-  .then(() => console.log("✅ MongoDB connected"))
-  .catch((err) => console.error("❌ MongoDB error:", err.message));
+  .then(() => console.log(" MongoDB connected"))
+  .catch((err) => console.error(" MongoDB error:", err.message));
 
 /*  Routes  */
 app.use("/api/curriculum", require("./routes/curriculum"));
