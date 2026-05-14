@@ -1,133 +1,313 @@
-function isNumeric(s) { return /^\d+$/.test((s || "").trim()); }
+/**
+ * extractTopics.js — Production-grade Kenyan scheme-of-work parser (IMPROVED)
+ *
+ * Fixes:
+ * - Better DOCX/Excel paste handling
+ * - Safer continuation detection
+ * - Stronger header detection
+ * - Flexible column mapping
+ * - More stable lesson reconstruction
+ */
 
-function splitLine(line) {
-  if (line.includes("\t")) return line.split("\t").map(c => c.trim());
-  return line.split(/   +/).map(c => c.trim());
+// ─────────────────────────────────────────────
+// 1. CLEANING HELPERS
+// ─────────────────────────────────────────────
+
+function cleanText(t) {
+  return (t || "")
+    .replace(/\r/g, "")
+    .replace(/\u00A0/g, " ") // non-breaking spaces from Word
+    .replace(/\n/g, " ")
+    .replace(/\t/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
-function isHeader(cols) {
-  const f = (cols[0] || "").toLowerCase().trim();
-  const s = (cols[1] || "").toLowerCase().trim();
-  return /^(wk|week)$/.test(f) || /^(wk|week)$/.test(s) ||
-         /^les(son)?$/.test(s) || (f === "" && /^les(son)?$/.test(s));
+function isInt(s) {
+  return /^\d+$/.test((s || "").toString().trim());
 }
 
-function append(existing, extra) {
-  const e = (extra || "").trim();
-  if (!e) return existing || "";
-  if (!existing) return e;
-  return existing + " " + e;
+function safeCell(cells, i) {
+  return (cells && cells[i] !== undefined && cells[i] !== null)
+    ? cells[i].toString().trim()
+    : "";
 }
 
-function appendCol(obj, field, cols, idx) {
-  if (cols[idx] && cols[idx].trim()) obj[field] = append(obj[field], cols[idx]);
-}
+// ─────────────────────────────────────────────
+// 2. ROW SPLITTING (ROBUST)
+// ─────────────────────────────────────────────
 
-function cleanLesson(l) {
-  Object.keys(l).forEach(k => { if (typeof l[k] === "string") l[k] = l[k].replace(/\s+/g, " ").trim(); });
-}
+function splitIntoTabRows(rawText) {
+  if (!rawText) return [];
 
-function parseScheme(rawText) {
-  if (!rawText || !rawText.trim()) return [];
-  const lines = rawText.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n").map(l => l.trimEnd());
-  const lessons = [];
-  let current = null;
-  let lastWeek = null;
+  const normalized = rawText
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n");
 
-  for (const line of lines) {
-    if (!line.trim()) continue;
-    const cols = splitLine(line);
-    if (isHeader(cols)) continue;
+  const lines = normalized.split("\n");
 
-    const col0 = (cols[0] || "").trim();
-    const col1 = (cols[1] || "").trim();
-    const weekVal   = isNumeric(col0) ? parseInt(col0) : null;
-    const lessonVal = isNumeric(col1) ? parseInt(col1) : null;
+  const rows = [];
 
-    if (lessonVal !== null) {
-      if (current) { cleanLesson(current); lessons.push(current); }
-      if (weekVal !== null) lastWeek = weekVal;
-      current = {
-        week: lastWeek || 0, lesson: lessonVal,
-        topic: (cols[2] || "").trim(), objectives: (cols[3] || "").trim(),
-        lifeApproach: (cols[4] || "").trim(), activities: (cols[5] || "").trim(),
-        methods: (cols[6] || "").trim(), resources: (cols[7] || "").trim(),
-        assessment: (cols[8] || "").trim(), remarks: (cols[9] || "").trim(),
-      };
-    } else if (current !== null) {
-      if (cols.length >= 4) {
-        appendCol(current, "topic", cols, 2);
-        appendCol(current, "objectives", cols, 3);
-        appendCol(current, "lifeApproach", cols, 4);
-        appendCol(current, "activities", cols, 5);
-        appendCol(current, "methods", cols, 6);
-        appendCol(current, "resources", cols, 7);
-        appendCol(current, "assessment", cols, 8);
-        appendCol(current, "remarks", cols, 9);
-      } else {
-        const text = cols.filter(Boolean).join(" ").trim();
-        if (!text) continue;
-        if (/by the end|learners will|able to|should be able/i.test(text)) current.objectives = append(current.objectives, text);
-        else if (/^\d+\.|discuss|explain|demonstrate|show|draw|Q&A|use atlas|mark|sketch/i.test(text)) current.activities = append(current.activities, text);
-        else if (/KLB|textbook|blackboard|whiteboard|chart|atlas|lesson note|book \d|pp\./i.test(text)) current.resources = append(current.resources, text);
-        else if (/quiz|oral|short quiz|describe|list|sketch|write|mark.*map|exercise/i.test(text)) current.assessment = append(current.assessment, text);
-        else if (/lecture|instruction|demonstration|collaborative|discussion|map work|questioning/i.test(text)) current.methods = append(current.methods, text);
-        else if (/awareness|approach|impact|value|appreciation|safety/i.test(text)) current.lifeApproach = append(current.lifeApproach, text);
-        else current.topic = append(current.topic, text);
-      }
-    }
-  }
-  if (current) { cleanLesson(current); lessons.push(current); }
-  return lessons;
-}
+  for (let line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
 
-function extractLessonContext(schemeText, week, lessonNum) {
-  const lessons = parseScheme(schemeText);
-  const targetWeek = parseInt(week)      || 1;
-  const targetLes  = parseInt(lessonNum) || 1;
+    // split on tabs OR multiple spaces (DOCX fix)
+    const cells = trimmed
+      .split(/\t| {2,}/)
+      .map(c => cleanText(c));
 
-  console.log("\nParsed lessons:", lessons.map(l => `W${l.week}L${l.lesson} — ${l.topic.substring(0, 50)}`));
-
-  // Strategy 1: exact match
-  let match = lessons.find(l => l.week === targetWeek && l.lesson === targetLes);
-  if (match) { console.log(`✅ Exact match: W${match.week}L${match.lesson} "${match.topic}"`); return formatContext(match); }
-
-  // Strategy 2: sequential → per-week offset
-  const priorCount  = lessons.filter(l => l.week < targetWeek).length;
-  const indexInWeek = targetLes - priorCount;
-  const weekLessons = lessons.filter(l => l.week === targetWeek);
-  if (indexInWeek >= 1 && indexInWeek <= weekLessons.length) {
-    match = weekLessons[indexInWeek - 1];
-    console.log(`✅ Offset match: sequential #${targetLes} → W${targetWeek} pos #${indexInWeek} → "${match.topic}"`);
-    return formatContext(match);
+    rows.push({
+      cells,
+      raw: line
+    });
   }
 
-  // Strategy 3: positional fallback
-  if (weekLessons.length > 0) {
-    const pos = ((targetLes - 1) % weekLessons.length);
-    match = weekLessons[pos];
-    console.warn(`⚠️  Positional fallback: W${targetWeek} L${targetLes} → pos ${pos + 1} "${match.topic}"`);
-    return formatContext(match);
+  return rows;
+}
+
+// ─────────────────────────────────────────────
+// 3. DETECTION
+// ─────────────────────────────────────────────
+
+function detectLessonStart(cells) {
+  const nonEmpty = cells
+    .map((v, i) => ({ v: cleanText(v), i }))
+    .filter(x => x.v !== "");
+
+  if (nonEmpty.length < 2) return null;
+
+  const a = nonEmpty[0];
+  const b = nonEmpty[1];
+
+  if (isInt(a.v) && isInt(b.v)) {
+    return {
+      week: parseInt(a.v),
+      lesson: parseInt(b.v),
+      weekIdx: a.i,
+      lessonIdx: b.i
+    };
   }
 
-  console.error(`❌ No lessons for W${targetWeek}. Weeks: `, [...new Set(lessons.map(l => l.week))]);
   return null;
 }
 
-function formatContext(m) {
-  return [
-    `WEEK: ${m.week}`,
-    `LESSON: ${m.lesson}`,
-    `TOPIC: ${m.topic}`,
-    `OBJECTIVES: ${m.objectives}`,
-    `LIFE APPROACH / VALUE: ${m.lifeApproach || "Not specified"}`,
-    `TEACHING/LEARNING ACTIVITIES: ${m.activities || "Not specified"}`,
-    `METHODS/STRATEGY: ${m.methods || "Not specified"}`,
-    `RESOURCES/REFERENCES: ${m.resources || "Not specified"}`,
-    `ASSESSMENT TASK: ${m.assessment || "Not specified"}`,
-  ].join("\n");
+// FIXED SAFE VERSION
+function detectWeekOnly(cells) {
+  const c0 = safeCell(cells, 0);
+  const c1 = safeCell(cells, 1);
+
+  if (isInt(c0) && !isInt(c1)) {
+    return parseInt(c0);
+  }
+
+  return null;
 }
 
-function getAllLessons(schemeText) { return parseScheme(schemeText); }
+function isHeaderRow(cells) {
+  const text = cells.join(" ").toLowerCase();
 
-module.exports = { extractLessonContext, getAllLessons, parseScheme };
+  const keywords = [
+    "wk", "week", "lesson", "topic",
+    "objective", "life", "approach",
+    "activity", "method", "resource",
+    "assessment", "remark"
+  ];
+
+  const hits = keywords.filter(k => text.includes(k)).length;
+
+  return hits >= 3; // stricter = fewer false positives
+}
+
+// ─────────────────────────────────────────────
+// 4. COLUMN MAP
+// ─────────────────────────────────────────────
+
+function buildColumnMap(headerCells) {
+  const map = {};
+
+  const patterns = [
+    { field: "week", re: /^(wk|week)/i },
+    { field: "lesson", re: /^(les|lesson)/i },
+    { field: "topic", re: /topic/i },
+    { field: "objectives", re: /obj|outcome/i },
+    { field: "lifeApproach", re: /life|approach/i },
+    { field: "activities", re: /activ/i },
+    { field: "methods", re: /meth/i },
+    { field: "resources", re: /resour/i },
+    { field: "assessment", re: /assess/i },
+    { field: "remarks", re: /remark/i }
+  ];
+
+  if (headerCells?.length) {
+    headerCells.forEach((cell, idx) => {
+      const text = cleanText(cell);
+      const match = patterns.find(p => p.re.test(text));
+      if (match) map[idx] = match.field;
+    });
+  }
+
+  if (Object.keys(map).length < 3) {
+    return {
+      0: "week",
+      1: "lesson",
+      2: "topic",
+      3: "objectives",
+      4: "lifeApproach",
+      5: "activities",
+      6: "methods",
+      7: "resources",
+      8: "assessment",
+      9: "remarks"
+    };
+  }
+
+  return map;
+}
+
+// ─────────────────────────────────────────────
+// 5. LESSON STRUCTURE
+// ─────────────────────────────────────────────
+
+function emptyLesson() {
+  return {
+    week: 0,
+    lesson: 0,
+    topic: "",
+    objectives: "",
+    lifeApproach: "",
+    activities: "",
+    methods: "",
+    resources: "",
+    assessment: "",
+    remarks: ""
+  };
+}
+
+function applyCells(record, cells, colMap) {
+  cells.forEach((cell, idx) => {
+    const field = colMap[idx];
+    const cleaned = cleanText(cell);
+
+    if (!field || !cleaned) return;
+    if (field === "week" || field === "lesson") return;
+
+    if (record[field]) {
+      record[field] += " | " + cleaned; // safer merge
+    } else {
+      record[field] = cleaned;
+    }
+  });
+}
+
+// ─────────────────────────────────────────────
+// 6. MAIN PARSER
+// ─────────────────────────────────────────────
+
+function parseScheme(rawText) {
+  if (!rawText?.trim()) return [];
+
+  const rows = splitIntoTabRows(rawText);
+  if (!rows.length) return [];
+
+  let colMap = null;
+  let headerIndex = -1;
+
+  for (let i = 0; i < Math.min(rows.length, 12); i++) {
+    if (isHeaderRow(rows[i].cells)) {
+      colMap = buildColumnMap(rows[i].cells);
+      headerIndex = i;
+      break;
+    }
+  }
+
+  if (!colMap) colMap = buildColumnMap(null);
+
+  const lessons = [];
+  let current = null;
+
+  for (let i = 0; i < rows.length; i++) {
+    if (i === headerIndex) continue;
+
+    const cells = rows[i].cells;
+
+    if (isHeaderRow(cells)) continue;
+
+    const start = detectLessonStart(cells);
+
+    if (start) {
+      if (current?.week && current?.lesson) {
+        lessons.push(current);
+      }
+
+      current = emptyLesson();
+      current.week = start.week;
+      current.lesson = start.lesson;
+
+      const clone = [...cells];
+      clone[start.weekIdx] = "";
+      clone[start.lessonIdx] = "";
+
+      applyCells(current, clone, colMap);
+      continue;
+    }
+
+    if (!current) continue;
+
+    const weekOnly = detectWeekOnly(cells);
+    if (weekOnly) {
+      current.week = weekOnly;
+      continue;
+    }
+
+    applyCells(current, cells, colMap);
+  }
+
+  if (current?.week && current?.lesson) {
+    lessons.push(current);
+  }
+
+  return lessons;
+}
+
+// ─────────────────────────────────────────────
+// 7. CONTEXT EXTRACTOR
+// ─────────────────────────────────────────────
+
+function extractLessonContext(schemeText, week, lessonNum) {
+  const lessons = parseScheme(schemeText);
+
+  const w = parseInt(week);
+  const l = parseInt(lessonNum);
+
+  const match = lessons.find(x => x.week === w && x.lesson === l);
+  if (!match) return null;
+
+  return `
+WEEK: ${match.week}
+LESSON: ${match.lesson}
+TOPIC: ${match.topic}
+OBJECTIVES: ${match.objectives}
+LIFE APPROACH: ${match.lifeApproach}
+ACTIVITIES: ${match.activities}
+METHODS: ${match.methods}
+RESOURCES: ${match.resources}
+ASSESSMENT: ${match.assessment}
+${match.remarks ? "REMARKS: " + match.remarks : ""}
+`.trim();
+}
+
+// ─────────────────────────────────────────────
+// 8. DEBUG
+// ─────────────────────────────────────────────
+
+function debugPrint(lessons) {
+  console.log("Parsed Lessons:", lessons.length);
+
+  lessons.forEach((l, i) => {
+    console.log(`\n${i + 1}. W${l.week} L${l.lesson}`);
+    console.log(l.topic);
+  });
+}
+
+module.exports = { parseScheme, extractLessonContext, debugPrint };
